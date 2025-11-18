@@ -5,6 +5,31 @@ All notable changes to Claude Code Mux will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-11-19
+
+### Added
+- OpenAI ChatGPT Plus/Pro OAuth 2.0 authentication support
+- GPT-5.1 and GPT-5.1 Codex model support via OpenAI OAuth
+- OpenAI Codex Responses API integration (`/codex/responses` endpoint)
+- Reasoning block to thinking block conversion for Codex models
+- Separate OAuth callback server on port 1455 for OpenAI OAuth
+- Official OpenAI Codex instructions from rust-v0.58.0
+- Browser-like headers for Cloudflare bypass (native-tls)
+- SSE (Server-Sent Events) response parsing for streaming
+- JWT token decoding to extract ChatGPT account_id
+- Admin UI support for OpenAI OAuth flow (similar to Anthropic OAuth)
+
+### Changed
+- Switched from rustls-tls to native-tls for better compatibility
+- Enhanced OpenAI provider to support both API Key and OAuth authentication
+- Updated OAuth handlers to support "openai-codex" type
+- Improved SSE parsing to extract both reasoning and message content blocks
+
+### Fixed
+- OpenAI Codex model streaming with proper endpoint routing
+- PKCE state/verifier separation for OpenAI OAuth compatibility
+- Reasoning block handling in gpt-5.1-codex responses
+
 ## [0.4.3] - 2025-11-17
 
 ### Added
@@ -73,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TOML-based configuration
 - Token counting endpoint (`/v1/messages/count_tokens`)
 
+[0.5.0]: https://github.com/9j/claude-code-mux/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/9j/claude-code-mux/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/9j/claude-code-mux/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/9j/claude-code-mux/compare/v0.4.0...v0.4.1

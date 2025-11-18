@@ -78,18 +78,46 @@ pub async fn start_server(config: AppConfig) -> anyhow::Result<()> {
         // OAuth endpoints
         .route("/api/oauth/authorize", post(oauth_handlers::oauth_authorize))
         .route("/api/oauth/exchange", post(oauth_handlers::oauth_exchange))
+        .route("/api/oauth/callback", get(oauth_handlers::oauth_callback))
+        .route("/auth/callback", get(oauth_handlers::oauth_callback))  // OpenAI Codex uses this path
         .route("/api/oauth/tokens", get(oauth_handlers::oauth_list_tokens))
         .route("/api/oauth/tokens/delete", post(oauth_handlers::oauth_delete_token))
-        .route("/api/oauth/tokens/refresh", post(oauth_handlers::oauth_refresh_token))
-        .with_state(state);
+        .route("/api/oauth/tokens/refresh", post(oauth_handlers::oauth_refresh_token));
 
-    // Bind to address
+    // Clone state before moving it
+    let oauth_state = state.clone();
+    let app = app.with_state(state);
+
+    // Bind to main address
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = TcpListener::bind(&addr).await?;
 
     info!("🚀 Server listening on {}", addr);
 
-    // Start server
+    // Start OAuth callback server on port 1455 (required for OpenAI Codex)
+    // This is necessary because OpenAI's OAuth app only allows localhost:1455/auth/callback
+    tokio::spawn(async move {
+        let oauth_callback_app = AxumRouter::new()
+            .route("/auth/callback", get(oauth_handlers::oauth_callback))
+            .with_state(oauth_state);
+
+        let oauth_addr = "127.0.0.1:1455";
+        match TcpListener::bind(oauth_addr).await {
+            Ok(oauth_listener) => {
+                info!("🔐 OAuth callback server listening on {}", oauth_addr);
+                if let Err(e) = axum::serve(oauth_listener, oauth_callback_app).await {
+                    error!("OAuth callback server error: {}", e);
+                }
+            }
+            Err(e) => {
+                // Don't fail if port 1455 is already in use - just warn
+                error!("⚠️  Failed to bind OAuth callback server on {}: {}", oauth_addr, e);
+                error!("⚠️  OpenAI Codex OAuth will not work. Port 1455 must be available.");
+            }
+        }
+    });
+
+    // Start main server
     axum::serve(listener, app).await?;
 
     Ok(())

@@ -47,7 +47,7 @@ Claude Code → Claude Code Mux → Multiple AI Providers
 
 ### 🎯 Core Features
 - ✨ **Modern Admin UI** - Beautiful web interface with auto-save and URL-based navigation
-- 🔐 **OAuth 2.0 Support** - FREE access for Claude Pro/Max subscribers with automatic token refresh
+- 🔐 **OAuth 2.0 Support** - FREE access for Claude Pro/Max and ChatGPT Plus/Pro with automatic token refresh
 - 🧠 **Intelligent Routing** - Auto-route by task type (websearch, reasoning, background, default)
 - 🔄 **Provider Failover** - Automatic fallback to backup providers with priority-based routing
 - 🌊 **Streaming Support** - Full Server-Sent Events (SSE) streaming for real-time responses
@@ -108,7 +108,8 @@ Claude Code → Claude Code Mux → Multiple AI Providers
 - **Kimi For Coding** - Premium membership for Kimi
 
 ### OpenAI-Compatible
-- **OpenAI** - Official OpenAI API
+- **OpenAI** - Official OpenAI API (supports both API Key and OAuth)
+- **OpenAI (OAuth)** - 🆓 **FREE for ChatGPT Plus/Pro subscribers** via OAuth 2.0 (GPT-5.1, GPT-5.1 Codex)
 - **OpenRouter** - Unified API gateway (500+ models)
 - **Groq** - LPU inference (ultra-fast)
 - **Together AI** - Open source model inference
@@ -512,13 +513,15 @@ Result: glm-4.6 (original model name, routed through model mappings)
 
 ## Advanced Features
 
-### OAuth Authentication (FREE for Claude Pro/Max)
+### OAuth Authentication (FREE for Claude Pro/Max & ChatGPT Plus/Pro)
 
-Claude Pro/Max subscribers can use the official Claude API **completely free** via OAuth 2.0 authentication.
+Claude Pro/Max and ChatGPT Plus/Pro subscribers can use their respective APIs **completely free** via OAuth 2.0 authentication.
 
 #### Setting Up OAuth
 
 **Via Web UI** (Recommended):
+
+**For Claude Pro/Max**:
 1. Navigate to **Providers** tab → **"Add Provider"**
 2. Select provider type: **Anthropic**
 3. Enter provider name (e.g., `claude-max`)
@@ -527,6 +530,20 @@ Claude Pro/Max subscribers can use the official Claude API **completely free** v
 6. Complete authorization in popup window
 7. Copy and paste the authorization code
 8. Click **"Complete Authentication"**
+
+**For ChatGPT Plus/Pro**:
+1. Navigate to **Providers** tab → **"Add Provider"**
+2. Select provider type: **OpenAI**
+3. Enter provider name (e.g., `chatgpt-codex`)
+4. Select authentication: **OAuth (ChatGPT Plus/Pro)**
+5. Click **"🔐 Start OAuth Login"**
+6. Complete authorization in popup window (port 1455)
+7. Copy and paste the authorization code
+8. Click **"Complete Authentication"**
+
+> **💡 Supported Models**:
+> - **Claude OAuth**: All Claude models (Opus, Sonnet, Haiku)
+> - **ChatGPT OAuth**: GPT-5.1, GPT-5.1 Codex (with reasoning blocks converted to thinking)
 
 **Via CLI Tool**:
 ```bash

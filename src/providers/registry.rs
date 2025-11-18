@@ -50,9 +50,12 @@ impl ProviderRegistry {
             let provider: Box<dyn AnthropicProvider> = match config.provider_type.as_str() {
                 // OpenAI
                 "openai" => Box::new(OpenAIProvider::new(
+                    config.name.clone(),
                     api_key,
-                    config.base_url.clone(),
+                    config.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
                     config.models.clone(),
+                    config.oauth_provider.clone(),
+                    token_store.clone(),
                 )),
 
                 // Anthropic-compatible providers
@@ -87,42 +90,52 @@ impl ProviderRegistry {
 
                 // OpenAI-compatible providers
                 "openrouter" => Box::new(OpenAIProvider::openrouter(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "deepinfra" => Box::new(OpenAIProvider::deepinfra(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "novita" => Box::new(OpenAIProvider::novita(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "baseten" => Box::new(OpenAIProvider::baseten(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "together" => Box::new(OpenAIProvider::together(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "fireworks" => Box::new(OpenAIProvider::fireworks(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "groq" => Box::new(OpenAIProvider::groq(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "nebius" => Box::new(OpenAIProvider::nebius(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "cerebras" => Box::new(OpenAIProvider::cerebras(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),
                 "moonshot" => Box::new(OpenAIProvider::moonshot(
+                    config.name.clone(),
                     api_key,
                     config.models.clone(),
                 )),

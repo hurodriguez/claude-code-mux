@@ -71,6 +71,28 @@ impl OAuthConfig {
         config.auth_url = "https://console.anthropic.com/oauth/authorize".to_string();
         config
     }
+
+    /// OpenAI ChatGPT Plus/Pro OAuth configuration (for Codex)
+    ///
+    /// Note: OpenAI's official Codex CLI OAuth app has a fixed redirect_uri.
+    /// The client_id "app_EMoamEEZ73f0CkXaXp7hrann" only allows:
+    /// - http://localhost:1455/auth/callback
+    ///
+    /// This is hardcoded in OpenAI's OAuth app registration and cannot be changed.
+    pub fn openai_codex() -> Self {
+        Self {
+            client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
+            auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
+            token_url: "https://auth.openai.com/oauth/token".to_string(),
+            redirect_uri: "http://localhost:1455/auth/callback".to_string(),
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+                "offline_access".to_string(),
+            ],
+        }
+    }
 }
 
 /// OAuth client for handling authentication flows
@@ -97,15 +119,42 @@ impl OAuthClient {
         let mut url = url::Url::parse(&self.config.auth_url)
             .expect("Invalid auth URL");
 
-        url.query_pairs_mut()
-            .append_pair("code", "true")
-            .append_pair("client_id", &self.config.client_id)
-            .append_pair("response_type", "code")
-            .append_pair("redirect_uri", &self.config.redirect_uri)
-            .append_pair("scope", &self.config.scopes.join(" "))
-            .append_pair("code_challenge", &pkce.challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &pkce.verifier);
+        // Check if this is OpenAI Codex (based on client_id)
+        let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+
+        if is_openai_codex {
+            // OpenAI uses a separate random state (not the PKCE verifier)
+            // Generate random state for CSRF protection
+            use rand::Rng;
+            let random_bytes: Vec<u8> = (0..16).map(|_| rand::thread_rng().gen()).collect();
+            let state = random_bytes.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+
+            // OpenAI Codex specific parameters
+            url.query_pairs_mut()
+                .append_pair("response_type", "code")
+                .append_pair("client_id", &self.config.client_id)
+                .append_pair("redirect_uri", &self.config.redirect_uri)
+                .append_pair("scope", &self.config.scopes.join(" "))
+                .append_pair("code_challenge", &pkce.challenge)
+                .append_pair("code_challenge_method", "S256")
+                .append_pair("state", &state)  // Random state, NOT verifier
+                .append_pair("id_token_add_organizations", "true")
+                .append_pair("codex_cli_simplified_flow", "true")
+                .append_pair("originator", "codex_cli_rs");
+        } else {
+            // Anthropic specific parameters (uses verifier as state)
+            url.query_pairs_mut()
+                .append_pair("code", "true")
+                .append_pair("client_id", &self.config.client_id)
+                .append_pair("response_type", "code")
+                .append_pair("redirect_uri", &self.config.redirect_uri)
+                .append_pair("scope", &self.config.scopes.join(" "))
+                .append_pair("code_challenge", &pkce.challenge)
+                .append_pair("code_challenge_method", "S256")
+                .append_pair("state", &pkce.verifier);
+        }
 
         AuthorizationUrl {
             url: url.to_string(),
@@ -120,28 +169,12 @@ impl OAuthClient {
         verifier: &str,
         provider_id: &str,
     ) -> Result<OAuthToken> {
-        // Parse code (format: "code#state")
-        let parts: Vec<&str> = code.split('#').collect();
-        let auth_code = parts.get(0).context("Invalid code format")?;
-        let state = parts.get(1).unwrap_or(&verifier);
-
-        #[derive(Serialize)]
-        struct TokenRequest {
-            code: String,
-            state: String,
-            grant_type: String,
-            client_id: String,
-            redirect_uri: String,
-            code_verifier: String,
-        }
-
-        let request = TokenRequest {
-            code: auth_code.to_string(),
-            state: state.to_string(),
-            grant_type: "authorization_code".to_string(),
-            client_id: self.config.client_id.clone(),
-            redirect_uri: self.config.redirect_uri.clone(),
-            code_verifier: verifier.to_string(),
+        // Parse code (backward compatible: "code#state" or just "code")
+        // Note: For OpenAI, we now only receive "code" without state
+        let auth_code = if code.contains('#') {
+            code.split('#').next().unwrap_or(code)
+        } else {
+            code
         };
 
         #[derive(Deserialize)]
@@ -151,13 +184,60 @@ impl OAuthClient {
             expires_in: i64,
         }
 
-        let response = self.http_client
-            .post(&self.config.token_url)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to exchange code for token")?;
+        let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+
+        let response = if is_openai_codex {
+            // OpenAI uses form-urlencoded and only needs code + code_verifier
+            tracing::debug!("🔍 OpenAI token exchange:");
+            tracing::debug!("  code: {}", auth_code);
+            tracing::debug!("  code_verifier: {}", verifier);
+            tracing::debug!("  redirect_uri: {}", &self.config.redirect_uri);
+            tracing::debug!("  client_id: {}", &self.config.client_id);
+
+            let form_params = [
+                ("grant_type", "authorization_code"),
+                ("client_id", &self.config.client_id),
+                ("code", auth_code),
+                ("code_verifier", verifier),  // This is the PKCE verifier from frontend
+                ("redirect_uri", &self.config.redirect_uri),
+            ];
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&form_params)
+                .send()
+                .await
+                .context("Failed to exchange code for token")?
+        } else {
+            // Anthropic uses JSON and requires state (which equals verifier)
+            #[derive(Serialize)]
+            struct TokenRequest {
+                code: String,
+                state: String,
+                grant_type: String,
+                client_id: String,
+                redirect_uri: String,
+                code_verifier: String,
+            }
+
+            let request = TokenRequest {
+                code: auth_code.to_string(),
+                state: verifier.to_string(),  // Anthropic uses verifier as state
+                grant_type: "authorization_code".to_string(),
+                client_id: self.config.client_id.clone(),
+                redirect_uri: self.config.redirect_uri.clone(),
+                code_verifier: verifier.to_string(),
+            };
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to exchange code for token")?
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -189,19 +269,6 @@ impl OAuthClient {
         let existing_token = self.token_store.get(provider_id)
             .context("No token found for provider")?;
 
-        #[derive(Serialize)]
-        struct RefreshRequest {
-            grant_type: String,
-            refresh_token: String,
-            client_id: String,
-        }
-
-        let request = RefreshRequest {
-            grant_type: "refresh_token".to_string(),
-            refresh_token: existing_token.refresh_token.clone(),
-            client_id: self.config.client_id.clone(),
-        };
-
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
@@ -209,13 +276,46 @@ impl OAuthClient {
             expires_in: i64,
         }
 
-        let response = self.http_client
-            .post(&self.config.token_url)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to refresh token")?;
+        let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+
+        let response = if is_openai_codex {
+            // OpenAI uses form-urlencoded
+            let form_params = [
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &existing_token.refresh_token),
+                ("client_id", &self.config.client_id),
+            ];
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&form_params)
+                .send()
+                .await
+                .context("Failed to refresh token")?
+        } else {
+            // Anthropic uses JSON
+            #[derive(Serialize)]
+            struct RefreshRequest {
+                grant_type: String,
+                refresh_token: String,
+                client_id: String,
+            }
+
+            let request = RefreshRequest {
+                grant_type: "refresh_token".to_string(),
+                refresh_token: existing_token.refresh_token.clone(),
+                client_id: self.config.client_id.clone(),
+            };
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to refresh token")?
+        };
 
         if !response.status().is_success() {
             let status = response.status();
