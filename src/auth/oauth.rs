@@ -218,7 +218,7 @@ impl OAuthClient {
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
-            refresh_token: String,
+            refresh_token: Option<String>,  // Google doesn't return new refresh_token
             expires_in: i64,
         }
 
@@ -319,7 +319,7 @@ impl OAuthClient {
         let token = OAuthToken {
             provider_id: provider_id.to_string(),
             access_token: token_response.access_token,
-            refresh_token: token_response.refresh_token,
+            refresh_token: token_response.refresh_token.expect("Initial OAuth exchange must return refresh_token"),
             expires_at,
             enterprise_url: None,
             project_id: None,  // Will be set by loadCodeAssist for Gemini
@@ -339,14 +339,32 @@ impl OAuthClient {
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
-            refresh_token: String,
+            refresh_token: Option<String>,  // Google doesn't return new refresh_token
             expires_in: i64,
         }
 
         let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+        let is_google = self.config.client_secret.is_some()
+            && self.config.token_url.contains("googleapis.com");
 
-        let response = if is_openai_codex {
-            // OpenAI uses form-urlencoded
+        let response = if is_google {
+            // Google uses form-urlencoded WITH client_secret
+            let form_params = [
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &existing_token.refresh_token),
+                ("client_id", &self.config.client_id),
+                ("client_secret", self.config.client_secret.as_ref().unwrap()),
+            ];
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&form_params)
+                .send()
+                .await
+                .context("Failed to refresh token")?
+        } else if is_openai_codex {
+            // OpenAI uses form-urlencoded WITHOUT client_secret
             let form_params = [
                 ("grant_type", "refresh_token"),
                 ("refresh_token", &existing_token.refresh_token),
@@ -361,7 +379,7 @@ impl OAuthClient {
                 .await
                 .context("Failed to refresh token")?
         } else {
-            // Anthropic uses JSON
+            // Anthropic uses JSON WITHOUT client_secret
             #[derive(Serialize)]
             struct RefreshRequest {
                 grant_type: String,
@@ -390,7 +408,12 @@ impl OAuthClient {
             return Err(anyhow!("Token refresh failed: {} - {}", status, body));
         }
 
-        let token_response: TokenResponse = response.json().await
+        // Debug: Log the raw response body
+        let response_text = response.text().await
+            .context("Failed to read response body")?;
+        tracing::debug!("🔍 Token refresh response body: {}", response_text);
+
+        let token_response: TokenResponse = serde_json::from_str(&response_text)
             .context("Failed to parse token response")?;
 
         let expires_at = Utc::now() + chrono::Duration::seconds(token_response.expires_in);
@@ -398,7 +421,8 @@ impl OAuthClient {
         let token = OAuthToken {
             provider_id: provider_id.to_string(),
             access_token: token_response.access_token,
-            refresh_token: token_response.refresh_token,
+            // Use new refresh_token if provided, otherwise keep existing one (Google doesn't return new one)
+            refresh_token: token_response.refresh_token.unwrap_or(existing_token.refresh_token),
             expires_at,
             enterprise_url: existing_token.enterprise_url,
             project_id: existing_token.project_id,  // Preserve project_id from existing token

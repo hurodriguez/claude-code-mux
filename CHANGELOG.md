@@ -5,6 +5,30 @@ All notable changes to Claude Code Mux will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-11-19
+
+### Added
+- Google Gemini provider with OAuth 2.0 support (Google AI Pro/Ultra via Code Assist API)
+- Separate Vertex AI provider for GCP platform with multi-model support
+- Three authentication methods for Gemini: OAuth, API Key (AI Studio), and Vertex AI (ADC)
+- Anthropic to Gemini API format transformation
+  - System prompts to systemInstruction
+  - Message conversion (user/assistant to user/model)
+  - Content blocks (text, image, thinking)
+  - Tools/functions to functionDeclarations
+  - Generation config mapping (temperature, top_p, top_k, max_tokens)
+- Gemini to Anthropic response transformation
+- OAuth token refresh logic for Gemini provider
+- Admin UI support for Gemini and Vertex AI providers
+- Comprehensive Gemini/Vertex AI integration documentation
+- Project ID and location configuration for Vertex AI
+- OAuth token store with project_id field for Gemini
+
+### Changed
+- Separated Vertex AI as distinct provider type from Gemini
+- Enhanced OAuth flow to support Google's standard OAuth 2.0 parameters
+- Updated OAuth handlers with loadCodeAssist API integration for project_id retrieval
+
 ## [0.5.0] - 2025-11-19
 
 ### Added
@@ -98,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TOML-based configuration
 - Token counting endpoint (`/v1/messages/count_tokens`)
 
+[0.6.0]: https://github.com/9j/claude-code-mux/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/9j/claude-code-mux/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/9j/claude-code-mux/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/9j/claude-code-mux/compare/v0.4.1...v0.4.2

@@ -106,6 +106,12 @@ impl GeminiProvider {
         self.project_id.is_some() && self.location.is_some()
     }
 
+    /// Check if the model supports tools (function calling)
+    /// lite/flash-lite models don't support tools
+    fn supports_tools(&self, model: &str) -> bool {
+        !model.contains("lite") && !model.contains("flash-lite")
+    }
+
     /// Get OAuth bearer token (with automatic refresh)
     async fn get_auth_header(&self) -> Result<Option<String>, ProviderError> {
         if let (Some(oauth_provider_id), Some(token_store)) =
@@ -234,24 +240,55 @@ impl GeminiProvider {
         };
 
         // Transform tools if present
-        let tools = request.tools.as_ref().map(|anthropic_tools| {
-            vec![GeminiTool {
-                function_declarations: anthropic_tools
-                    .iter()
-                    .filter_map(|tool| {
-                        let mut parameters = tool.input_schema.clone().unwrap_or_default();
-                        // Clean JSON Schema metadata that Gemini doesn't support
-                        clean_json_schema(&mut parameters);
+        let tools = if self.supports_tools(&request.model) {
+            request.tools.as_ref().map(|anthropic_tools| {
+                let mut gemini_tools = Vec::new();
+                let mut function_declarations = Vec::new();
 
-                        Some(GeminiFunctionDeclaration {
-                            name: tool.name.as_ref()?.clone(),
-                            description: tool.description.clone().unwrap_or_default(),
-                            parameters,
-                        })
-                    })
-                    .collect(),
-            }]
-        });
+                for tool in anthropic_tools {
+                    let tool_name = tool.name.as_ref().map(|s| s.as_str()).unwrap_or("");
+
+                    match tool_name {
+                        "WebSearch" => {
+                            // Convert to Gemini's native Google Search tool
+                            gemini_tools.push(GeminiTool::GoogleSearch {
+                                google_search: GoogleSearchTool {},
+                            });
+                        }
+                        "WebFetch" => {
+                            // Convert to Gemini's native URL Context tool
+                            gemini_tools.push(GeminiTool::UrlContext {
+                                url_context: UrlContextTool {},
+                            });
+                        }
+                        _ => {
+                            // Regular function calling tool
+                            let mut parameters = tool.input_schema.clone().unwrap_or_default();
+                            clean_json_schema(&mut parameters);
+
+                            if let Some(name) = &tool.name {
+                                function_declarations.push(GeminiFunctionDeclaration {
+                                    name: name.clone(),
+                                    description: tool.description.clone().unwrap_or_default(),
+                                    parameters,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Add function declarations if any
+                if !function_declarations.is_empty() {
+                    gemini_tools.push(GeminiTool::FunctionDeclarations {
+                        function_declarations,
+                    });
+                }
+
+                gemini_tools
+            })
+        } else {
+            None // lite/flash-lite models don't support tools
+        };
 
         Ok(GeminiRequest {
             contents,
@@ -319,6 +356,54 @@ impl GeminiProvider {
             usage,
         })
     }
+
+
+    /// Handle 429 rate limit errors with automatic retry
+    async fn handle_rate_limit_retry<F, Fut>(
+        &self,
+        mut request_fn: F,
+        max_retries: u32,
+    ) -> Result<reqwest::Response, ProviderError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    {
+        let mut retries = 0;
+        
+        loop {
+            let response = request_fn().await?;
+            
+            // Check if it's a 429 error
+            if response.status().as_u16() == 429 {
+                let error_text = response.text().await.unwrap_or_default();
+                
+                // Try to extract retry delay
+                if let Some(delay) = extract_retry_delay(&error_text) {
+                    if retries < max_retries {
+                        retries += 1;
+                        tracing::warn!("⏱️  Rate limit hit (attempt {}/{}), retrying after {:?}...", 
+                                      retries, max_retries, delay);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    } else {
+                        tracing::error!("❌ Rate limit retries exhausted after {} attempts", max_retries);
+                        return Err(ProviderError::ApiError {
+                            status: 429,
+                            message: error_text,
+                        });
+                    }
+                } else {
+                    // No retry delay found, return error
+                    return Err(ProviderError::ApiError {
+                        status: 429,
+                        message: error_text,
+                    });
+                }
+            }
+            
+            return Ok(response);
+        }
+    }
 }
 
 #[async_trait]
@@ -376,19 +461,36 @@ impl AnthropicProvider for GeminiProvider {
 
             tracing::debug!("🔐 Using OAuth Code Assist API: {}", url);
 
-            // Build request
-            let mut req_builder = self.client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .header("Authorization", bearer_token);
-
-            // Add custom headers
-            for (key, value) in &self.custom_headers {
-                req_builder = req_builder.header(key, value);
+            // Debug: Log the request payload
+            if let Ok(json_str) = serde_json::to_string_pretty(&code_assist_request) {
+                tracing::debug!("📤 Code Assist Request:\n{}", json_str);
             }
 
-            // Send request
-            let response = req_builder.json(&code_assist_request).send().await?;
+            // Clone necessary data for the retry closure
+            let client = self.client.clone();
+            let custom_headers = self.custom_headers.clone();
+            let bearer_token = bearer_token.clone();
+            let code_assist_request = code_assist_request.clone();
+            let url = url.clone();
+
+            // Use retry handler for 429 errors
+            let response = self.handle_rate_limit_retry(
+                move || {
+                    let mut req_builder = client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", &bearer_token);
+
+                    // Add custom headers
+                    for (key, value) in &custom_headers {
+                        req_builder = req_builder.header(key, value);
+                    }
+
+                    // Send request
+                    req_builder.json(&code_assist_request).send()
+                },
+                3, // max_retries
+            ).await?;
 
             if !response.status().is_success() {
                 let status = response.status().as_u16();
@@ -402,9 +504,7 @@ impl AnthropicProvider for GeminiProvider {
                     let model_name = &model;
                     let user_friendly_msg = if model_name.contains("gemini-3") || model_name.contains("preview") {
                         format!(
-                            "Model '{}' is not available. This may be a preview model that requires special access. \
-                            Try using gemini-2.5-pro or gemini-2.0-flash-exp instead. \
-                            Original error: {}",
+                            "Model '{}' is not available. This may be a preview model that requires special access. \n                            Try using gemini-2.5-pro or gemini-2.0-flash-exp instead. \n                            Original error: {}",
                             model_name, error_text
                         )
                     } else {
@@ -455,16 +555,27 @@ impl AnthropicProvider for GeminiProvider {
                 ));
             };
 
-            // Build request
-            let mut req_builder = self.client.post(&url).header("Content-Type", "application/json");
+            // Clone necessary data for the retry closure
+            let client = self.client.clone();
+            let custom_headers = self.custom_headers.clone();
+            let gemini_request = gemini_request.clone();
+            let url = url.clone();
 
-            // Add custom headers
-            for (key, value) in &self.custom_headers {
-                req_builder = req_builder.header(key, value);
-            }
+            // Use retry handler for 429 errors
+            let response = self.handle_rate_limit_retry(
+                move || {
+                    let mut req_builder = client.post(&url).header("Content-Type", "application/json");
 
-            // Send request
-            let response = req_builder.json(&gemini_request).send().await?;
+                    // Add custom headers
+                    for (key, value) in &custom_headers {
+                        req_builder = req_builder.header(key, value);
+                    }
+
+                    // Send request
+                    req_builder.json(&gemini_request).send()
+                },
+                3, // max_retries
+            ).await?;
 
             if !response.status().is_success() {
                 let status = response.status().as_u16();
@@ -486,12 +597,148 @@ impl AnthropicProvider for GeminiProvider {
 
     async fn send_message_stream(
         &self,
-        _request: AnthropicRequest,
+        request: AnthropicRequest,
     ) -> Result<std::pin::Pin<Box<dyn futures::stream::Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>, ProviderError> {
-        // TODO: Implement streaming for Gemini
-        Err(ProviderError::ConfigError(
-            "Streaming not yet implemented for Gemini".to_string(),
-        ))
+        use futures::TryStreamExt;
+
+        let model = request.model.clone();
+
+        // Check if using OAuth (Code Assist API)
+        if self.is_oauth() {
+            // Use Code Assist API streaming endpoint
+            let gemini_request = self.transform_request(&request)?;
+
+            // Get OAuth bearer token
+            let auth_header = self.get_auth_header().await?;
+            let bearer_token = auth_header.ok_or_else(|| {
+                ProviderError::AuthError("OAuth configured but no token available".to_string())
+            })?;
+
+            // Get project_id from token store
+            let project_id = if let (Some(oauth_provider_id), Some(token_store)) =
+                (&self.oauth_provider_id, &self.token_store) {
+                token_store
+                    .get(oauth_provider_id)
+                    .and_then(|token| token.project_id.clone())
+            } else {
+                None
+            };
+
+            if project_id.is_none() {
+                tracing::warn!("⚠️ No project_id found in token for Gemini OAuth. Code Assist API may fail.");
+            }
+
+            // Generate unique user_prompt_id
+            let user_prompt_id = format!("gemini-{}", chrono::Utc::now().timestamp_millis());
+
+            // Wrap in Code Assist API format
+            let code_assist_request = CodeAssistRequest {
+                model: model.clone(),
+                project: project_id,
+                user_prompt_id: Some(user_prompt_id),
+                request: CodeAssistInnerRequest {
+                    contents: gemini_request.contents,
+                    system_instruction: gemini_request.system_instruction,
+                    generation_config: gemini_request.generation_config,
+                    tools: gemini_request.tools,
+                    session_id: None, // Optional
+                },
+            };
+
+            // Code Assist API streaming endpoint with alt=sse parameter
+            let url = format!("{}:streamGenerateContent?alt=sse", self.base_url);
+
+            tracing::debug!("🔐 Using OAuth Code Assist API (streaming): {}", url);
+
+            // Build request
+            let mut req_builder = self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer_token);
+
+            // Add custom headers
+            for (key, value) in &self.custom_headers {
+                req_builder = req_builder.header(key, value);
+            }
+
+            // Send request
+            let response = req_builder.json(&code_assist_request).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                tracing::error!("Code Assist API streaming error ({}): {}", status, error_text);
+                return Err(ProviderError::ApiError {
+                    status,
+                    message: error_text,
+                });
+            }
+
+            // Return the streaming response
+            // The Gemini API returns SSE format, just pass through the stream
+            let stream = response.bytes_stream().map_err(|e| ProviderError::HttpError(e));
+            Ok(Box::pin(stream))
+        } else {
+            // Use public Gemini API or Vertex AI streaming
+            let gemini_request = self.transform_request(&request)?;
+
+            // Build URL
+            let url = if self.is_vertex_ai() {
+                // Vertex AI streaming endpoint
+                format!(
+                    "{}/projects/{}/locations/{}/publishers/google/models/{}:streamGenerateContent?alt=sse",
+                    self.base_url,
+                    self.project_id.as_ref().unwrap(),
+                    self.location.as_ref().unwrap(),
+                    model
+                )
+            } else if self.api_key.is_some() {
+                // API Key streaming endpoint
+                format!(
+                    "{}/models/{}:streamGenerateContent?key={}&alt=sse",
+                    self.base_url,
+                    model,
+                    self.api_key.as_ref().unwrap()
+                )
+            } else {
+                return Err(ProviderError::ConfigError(
+                    "Gemini provider requires either api_key, OAuth, or Vertex AI configuration".to_string()
+                ));
+            };
+
+            tracing::debug!("📡 Using Gemini API (streaming): {}", url);
+
+            // Build request
+            let mut req_builder = self.client.post(&url).header("Content-Type", "application/json");
+
+            // Add custom headers
+            for (key, value) in &self.custom_headers {
+                req_builder = req_builder.header(key, value);
+            }
+
+            // Send request
+            let response = req_builder.json(&gemini_request).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                tracing::error!("Gemini API streaming error ({}): {}", status, error_text);
+                return Err(ProviderError::ApiError {
+                    status,
+                    message: error_text,
+                });
+            }
+
+            // Return the streaming response
+            let stream = response.bytes_stream().map_err(|e| ProviderError::HttpError(e));
+            Ok(Box::pin(stream))
+        }
     }
 
     async fn count_tokens(
@@ -511,7 +758,7 @@ impl AnthropicProvider for GeminiProvider {
 
 // Gemini API structures
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
@@ -523,32 +770,32 @@ struct GeminiRequest {
     tools: Option<Vec<GeminiTool>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GeminiContent {
     role: String,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum GeminiPart {
     Text { text: String },
     InlineData { inline_data: GeminiInlineData },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiInlineData {
     mime_type: String,
     data: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct GeminiSystemInstruction {
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -563,18 +810,39 @@ struct GeminiGenerationConfig {
     stop_sequences: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GeminiTool {
-    function_declarations: Vec<GeminiFunctionDeclaration>,
+/// Gemini Tool supports multiple tool types via protobuf oneof
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum GeminiTool {
+    /// Function calling tools
+    FunctionDeclarations {
+        #[serde(rename = "functionDeclarations")]
+        function_declarations: Vec<GeminiFunctionDeclaration>,
+    },
+    /// Google Search tool
+    GoogleSearch {
+        #[serde(rename = "googleSearch")]
+        google_search: GoogleSearchTool,
+    },
+    /// URL Context/Fetch tool
+    UrlContext {
+        #[serde(rename = "urlContext")]
+        url_context: UrlContextTool,
+    },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct GeminiFunctionDeclaration {
     name: String,
     description: String,
     parameters: serde_json::Value,
 }
+
+#[derive(Debug, Clone, Serialize)]
+struct GoogleSearchTool {}
+
+#[derive(Debug, Clone, Serialize)]
+struct UrlContextTool {}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,7 +870,7 @@ struct GeminiUsageMetadata {
 
 // Code Assist API structures (for OAuth)
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct CodeAssistRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -612,7 +880,7 @@ struct CodeAssistRequest {
     request: CodeAssistInnerRequest,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CodeAssistInnerRequest {
     contents: Vec<GeminiContent>,
@@ -632,4 +900,85 @@ struct CodeAssistResponse {
     response: GeminiResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     trace_id: Option<String>,
+}
+
+// Error response structures for rate limiting
+
+#[derive(Debug, Deserialize)]
+struct GeminiErrorResponse {
+    error: GeminiError,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiError {
+    code: u16,
+    message: String,
+    status: String,
+    #[serde(default)]
+    details: Vec<GeminiErrorDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "@type")]
+enum GeminiErrorDetail {
+    #[serde(rename = "type.googleapis.com/google.rpc.RetryInfo")]
+    RetryInfo { 
+        #[serde(rename = "retryDelay")]
+        retry_delay: String 
+    },
+    #[serde(rename = "type.googleapis.com/google.rpc.ErrorInfo")]
+    ErrorInfo {
+        reason: String,
+        domain: String,
+        #[serde(default)]
+        metadata: HashMap<String, String>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// Parse retry delay from Google's duration format (e.g., "3.020317815s", "60s", "900ms")
+fn parse_retry_delay(duration: &str) -> Option<std::time::Duration> {
+    if let Some(ms_str) = duration.strip_suffix("ms") {
+        ms_str.parse::<f64>().ok().map(|ms| std::time::Duration::from_millis(ms as u64))
+    } else if let Some(s_str) = duration.strip_suffix("s") {
+        s_str.parse::<f64>().ok().map(|s| std::time::Duration::from_secs_f64(s))
+    } else {
+        None
+    }
+}
+
+/// Extract retry delay from 429 error response
+fn extract_retry_delay(error_text: &str) -> Option<std::time::Duration> {
+    // Try to parse as JSON error response
+    if let Ok(error_response) = serde_json::from_str::<GeminiErrorResponse>(error_text) {
+        // Look for RetryInfo in details
+        for detail in &error_response.error.details {
+            if let GeminiErrorDetail::RetryInfo { retry_delay } = detail {
+                if let Some(delay) = parse_retry_delay(retry_delay) {
+                    tracing::info!("⏱️  Rate limit hit, will retry after {:?}", delay);
+                    return Some(delay);
+                }
+            }
+        }
+        
+        // Check for RATE_LIMIT_EXCEEDED in ErrorInfo
+        for detail in &error_response.error.details {
+            if let GeminiErrorDetail::ErrorInfo { reason, domain, metadata } = detail {
+                if reason == "RATE_LIMIT_EXCEEDED" && domain.contains("cloudcode-pa.googleapis.com") {
+                    // Try to get quotaResetDelay from metadata
+                    if let Some(quota_reset) = metadata.get("quotaResetDelay") {
+                        if let Some(delay) = parse_retry_delay(quota_reset) {
+                            tracing::info!("⏱️  Rate limit hit (RATE_LIMIT_EXCEEDED), will retry after {:?}", delay);
+                            return Some(delay);
+                        }
+                    }
+                    // Default to 10 seconds if no delay specified
+                    tracing::info!("⏱️  Rate limit hit (RATE_LIMIT_EXCEEDED), will retry after 10s");
+                    return Some(std::time::Duration::from_secs(10));
+                }
+            }
+        }
+    }
+    None
 }
