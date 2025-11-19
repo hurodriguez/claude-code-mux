@@ -47,11 +47,11 @@ Claude Code → Claude Code Mux → Multiple AI Providers
 
 ### 🎯 Core Features
 - ✨ **Modern Admin UI** - Beautiful web interface with auto-save and URL-based navigation
-- 🔐 **OAuth 2.0 Support** - FREE access for Claude Pro/Max and ChatGPT Plus/Pro with automatic token refresh
+- 🔐 **OAuth 2.0 Support** - FREE access for Claude Pro/Max, ChatGPT Plus/Pro, and Google AI Pro/Ultra
 - 🧠 **Intelligent Routing** - Auto-route by task type (websearch, reasoning, background, default)
 - 🔄 **Provider Failover** - Automatic fallback to backup providers with priority-based routing
 - 🌊 **Streaming Support** - Full Server-Sent Events (SSE) streaming for real-time responses
-- 🌐 **Multi-Provider Support** - 16+ providers including OpenAI, Anthropic, Groq, ZenMux, etc.
+- 🌐 **Multi-Provider Support** - 18+ providers including OpenAI, Anthropic, Google Gemini/Vertex AI, Groq, ZenMux, etc.
 - ⚡️ **High Performance** - ~5MB RAM, <1ms routing overhead (Rust powered)
 - 🎯 **Unified API** - Full Anthropic Messages API compatibility
 
@@ -91,10 +91,11 @@ Claude Code → Claude Code Mux → Multiple AI Providers
 
 ## Supported Providers
 
-**16+ AI providers with automatic format translation, streaming, and failover:**
+**18+ AI providers with automatic format translation, streaming, and failover:**
 
 - **Anthropic-compatible**: Anthropic (API Key/OAuth), ZenMux, z.ai, Minimax, Kimi
 - **OpenAI-compatible**: OpenAI, OpenRouter, Groq, Together, Fireworks, Deepinfra, Cerebras, Moonshot, Nebius, NovitaAI, Baseten
+- **Google AI**: Gemini (OAuth/API Key), Vertex AI (GCP ADC)
 
 <details>
 <summary>📋 View full provider details</summary>
@@ -120,6 +121,11 @@ Claude Code → Claude Code Mux → Multiple AI Providers
 - **Nebius** - AI inference platform
 - **NovitaAI** - GPU cloud platform
 - **Baseten** - ML deployment platform
+
+### Google AI
+- **Gemini** - Google AI Studio/Code Assist API (supports both OAuth and API Key)
+- **Gemini (OAuth)** - 🆓 **FREE for Google AI Pro/Ultra subscribers** via OAuth 2.0 (Code Assist API)
+- **Vertex AI** - GCP platform with ADC authentication (supports Gemini, Claude, Llama via Model Garden)
 
 </details>
 
@@ -296,9 +302,31 @@ Navigate to **Providers** tab → Click **"Add Provider"**
 3. Enter API key: `your-zai-api-key`
 4. Click **"Add Provider"**
 
+#### Example: Add Google Gemini with OAuth (🆓 FREE for Google AI Pro/Ultra)
+1. Select provider type: **Google Gemini**
+2. Enter provider name: `gemini-pro`
+3. Select authentication: **OAuth (Google AI Pro/Ultra)**
+4. Click **"🔐 Start OAuth Login"**
+5. Authorize in the popup window
+6. Copy and paste the authorization code
+7. Click **"Complete Authentication"**
+8. Click **"Add Provider"**
+
+> **💡 Pro Tip**: Google AI Pro/Ultra subscribers get **unlimited API access for FREE** via OAuth!
+
+#### Example: Add Vertex AI Provider (GCP)
+1. Select provider type: **☁️ Vertex AI**
+2. Enter provider name: `vertex-ai`
+3. Enter GCP Project ID: `your-gcp-project-id`
+4. Enter Location: `us-central1` (or your preferred region)
+5. Click **"Add Provider"**
+
+> **Note**: Vertex AI uses Application Default Credentials (ADC). Make sure you've run `gcloud auth application-default login` first.
+
 **Supported Providers**:
 - Anthropic-compatible: Anthropic (API Key or OAuth), ZenMux, z.ai, Minimax, Kimi
 - OpenAI-compatible: OpenAI, OpenRouter, Groq, Together, Fireworks, Deepinfra, Cerebras, Nebius, NovitaAI, Baseten
+- Google AI: Gemini (OAuth/API Key), Vertex AI (GCP ADC)
 
 ### Step 2: Add Model Mappings
 
@@ -532,9 +560,9 @@ Result: glm-4.6 (original model name, routed through model mappings)
 
 ## Advanced Features
 
-### OAuth Authentication (FREE for Claude Pro/Max & ChatGPT Plus/Pro)
+### OAuth Authentication (FREE for Claude Pro/Max, ChatGPT Plus/Pro & Google AI Pro/Ultra)
 
-Claude Pro/Max and ChatGPT Plus/Pro subscribers can use their respective APIs **completely free** via OAuth 2.0 authentication.
+Claude Pro/Max, ChatGPT Plus/Pro, and Google AI Pro/Ultra subscribers can use their respective APIs **completely free** via OAuth 2.0 authentication.
 
 #### Setting Up OAuth
 
@@ -560,9 +588,20 @@ Claude Pro/Max and ChatGPT Plus/Pro subscribers can use their respective APIs **
 7. Copy and paste the authorization code
 8. Click **"Complete Authentication"**
 
+**For Google AI Pro/Ultra**:
+1. Navigate to **Providers** tab → **"Add Provider"**
+2. Select provider type: **Google Gemini**
+3. Enter provider name (e.g., `gemini-pro`)
+4. Select authentication: **OAuth (Google AI Pro/Ultra)**
+5. Click **"🔐 Start OAuth Login"**
+6. Complete authorization in popup window
+7. Copy and paste the authorization code
+8. Click **"Complete Authentication"**
+
 > **💡 Supported Models**:
 > - **Claude OAuth**: All Claude models (Opus, Sonnet, Haiku)
 > - **ChatGPT OAuth**: GPT-5.1, GPT-5.1 Codex (with reasoning blocks converted to thinking)
+> - **Gemini OAuth**: All Gemini models via Code Assist API (Pro, Flash, Ultra)
 
 **Via CLI Tool**:
 ```bash
@@ -893,9 +932,14 @@ The proxy returns an error response with details about the failover chain and wh
 </details>
 
 <details>
-<summary><b>Can I use this with Claude Pro/Max subscription?</b></summary>
+<summary><b>Can I use this with Claude Pro/Max, ChatGPT Plus/Pro, or Google AI Pro/Ultra subscription?</b></summary>
 
-Yes! Claude Code Mux supports OAuth 2.0 authentication. Configure it in the Providers tab → Add Provider → Select "Anthropic" → Choose "OAuth (Claude Pro/Max)" authentication.
+Yes! Claude Code Mux supports OAuth 2.0 authentication for all three providers:
+- **Claude Pro/Max**: Providers tab → Add Provider → Select "Anthropic" → Choose "OAuth (Claude Pro/Max)"
+- **ChatGPT Plus/Pro**: Providers tab → Add Provider → Select "OpenAI" → Choose "OAuth (ChatGPT Plus/Pro)"
+- **Google AI Pro/Ultra**: Providers tab → Add Provider → Select "Google Gemini" → Choose "OAuth (Google AI Pro/Ultra)"
+
+All three provide **FREE unlimited API access** to subscribers!
 </details>
 
 <details>
