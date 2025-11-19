@@ -43,6 +43,7 @@ pub struct AuthorizationUrl {
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
+    pub client_secret: Option<String>,  // Some providers require client_secret (e.g., Google)
     pub auth_url: String,
     pub token_url: String,
     pub redirect_uri: String,
@@ -54,6 +55,7 @@ impl OAuthConfig {
     pub fn anthropic() -> Self {
         Self {
             client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
+            client_secret: None,  // PKCE-based public client
             auth_url: "https://claude.ai/oauth/authorize".to_string(),
             token_url: "https://console.anthropic.com/v1/oauth/token".to_string(),
             redirect_uri: "https://console.anthropic.com/oauth/code/callback".to_string(),
@@ -82,6 +84,7 @@ impl OAuthConfig {
     pub fn openai_codex() -> Self {
         Self {
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
+            client_secret: None,  // PKCE-based public client
             auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
             token_url: "https://auth.openai.com/oauth/token".to_string(),
             redirect_uri: "http://localhost:1455/auth/callback".to_string(),
@@ -90,6 +93,28 @@ impl OAuthConfig {
                 "profile".to_string(),
                 "email".to_string(),
                 "offline_access".to_string(),
+            ],
+        }
+    }
+
+    /// Google Gemini (AI Pro/Ultra) OAuth configuration
+    ///
+    /// Note: This uses Google's official Gemini CLI OAuth app credentials.
+    /// The client_id and client_secret are public (as documented in Google's official CLI).
+    /// See: https://github.com/google-gemini/gemini-cli
+    /// "It's ok to save this in git because this is an installed application"
+    /// https://developers.google.com/identity/protocols/oauth2#installed
+    pub fn gemini() -> Self {
+        Self {
+            client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com".to_string(),
+            client_secret: Some("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".to_string()),
+            auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            token_url: "https://oauth2.googleapis.com/token".to_string(),
+            redirect_uri: "http://localhost:13456/api/oauth/callback".to_string(),
+            scopes: vec![
+                "https://www.googleapis.com/auth/cloud-platform".to_string(),
+                "https://www.googleapis.com/auth/userinfo.email".to_string(),
+                "https://www.googleapis.com/auth/userinfo.profile".to_string(),
             ],
         }
     }
@@ -119,8 +144,9 @@ impl OAuthClient {
         let mut url = url::Url::parse(&self.config.auth_url)
             .expect("Invalid auth URL");
 
-        // Check if this is OpenAI Codex (based on client_id)
+        // Check provider type based on client_id
         let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+        let is_gemini = self.config.client_id.starts_with("681255809395-");
 
         if is_openai_codex {
             // OpenAI uses a separate random state (not the PKCE verifier)
@@ -143,10 +169,22 @@ impl OAuthClient {
                 .append_pair("id_token_add_organizations", "true")
                 .append_pair("codex_cli_simplified_flow", "true")
                 .append_pair("originator", "codex_cli_rs");
+        } else if is_gemini {
+            // Google OAuth uses standard OAuth 2.0 with PKCE
+            url.query_pairs_mut()
+                .append_pair("response_type", "code")
+                .append_pair("client_id", &self.config.client_id)
+                .append_pair("redirect_uri", &self.config.redirect_uri)
+                .append_pair("scope", &self.config.scopes.join(" "))
+                .append_pair("code_challenge", &pkce.challenge)
+                .append_pair("code_challenge_method", "S256")
+                .append_pair("state", &pkce.verifier)  // Use verifier as state
+                .append_pair("access_type", "offline")  // Request refresh token
+                .append_pair("prompt", "consent");  // Force consent screen
         } else {
             // Anthropic specific parameters (uses verifier as state)
             url.query_pairs_mut()
-                .append_pair("code", "true")
+                .append_pair("code", "true")  // Anthropic-specific non-standard parameter
                 .append_pair("client_id", &self.config.client_id)
                 .append_pair("response_type", "code")
                 .append_pair("redirect_uri", &self.config.redirect_uri)
@@ -185,8 +223,36 @@ impl OAuthClient {
         }
 
         let is_openai_codex = self.config.client_id == "app_EMoamEEZ73f0CkXaXp7hrann";
+        let is_gemini = self.config.client_id.starts_with("681255809395-");
 
-        let response = if is_openai_codex {
+        let response = if is_gemini {
+            // Google OAuth uses form-urlencoded with client_secret
+            tracing::debug!("🔍 Gemini token exchange:");
+            tracing::debug!("  code: {}", auth_code);
+            tracing::debug!("  code_verifier: {}", verifier);
+            tracing::debug!("  redirect_uri: {}", &self.config.redirect_uri);
+            tracing::debug!("  client_id: {}", &self.config.client_id);
+
+            let client_secret = self.config.client_secret.as_ref()
+                .ok_or_else(|| anyhow!("Gemini OAuth requires client_secret"))?;
+
+            let form_params = [
+                ("grant_type", "authorization_code"),
+                ("client_id", &self.config.client_id),
+                ("client_secret", client_secret),
+                ("code", auth_code),
+                ("code_verifier", verifier),
+                ("redirect_uri", &self.config.redirect_uri),
+            ];
+
+            self.http_client
+                .post(&self.config.token_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .form(&form_params)
+                .send()
+                .await
+                .context("Failed to exchange code for token")?
+        } else if is_openai_codex {
             // OpenAI uses form-urlencoded and only needs code + code_verifier
             tracing::debug!("🔍 OpenAI token exchange:");
             tracing::debug!("  code: {}", auth_code);
@@ -256,6 +322,7 @@ impl OAuthClient {
             refresh_token: token_response.refresh_token,
             expires_at,
             enterprise_url: None,
+            project_id: None,  // Will be set by loadCodeAssist for Gemini
         };
 
         // Save token
@@ -334,12 +401,95 @@ impl OAuthClient {
             refresh_token: token_response.refresh_token,
             expires_at,
             enterprise_url: existing_token.enterprise_url,
+            project_id: existing_token.project_id,  // Preserve project_id from existing token
         };
 
         // Save refreshed token
         self.token_store.save(token.clone())?;
 
         Ok(token)
+    }
+
+    /// Load Code Assist for Gemini and get project ID
+    /// This must be called after OAuth exchange for Gemini providers
+    pub async fn load_code_assist(&self, access_token: &str) -> Result<String> {
+        #[derive(Serialize)]
+        struct LoadCodeAssistRequest {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            cloudaicompanionProject: Option<String>,
+            metadata: ClientMetadata,
+        }
+
+        #[derive(Serialize)]
+        struct ClientMetadata {
+            ideType: String,
+            platform: String,
+            pluginType: String,
+        }
+
+        #[derive(Deserialize)]
+        struct LoadCodeAssistResponse {
+            #[serde(rename = "cloudaicompanionProject")]
+            cloudaicompanion_project: Option<String>,
+        }
+
+        // Try to get project ID from environment variables (like gemini-cli does)
+        let project_id = std::env::var("GOOGLE_CLOUD_PROJECT")
+            .or_else(|_| std::env::var("GOOGLE_CLOUD_PROJECT_ID"))
+            .ok();
+
+        if let Some(ref pid) = project_id {
+            tracing::info!("🔍 Using project ID from environment: {}", pid);
+        } else {
+            tracing::warn!("⚠️ No GOOGLE_CLOUD_PROJECT env var set. loadCodeAssist may not return project ID.");
+        }
+
+        let request = LoadCodeAssistRequest {
+            cloudaicompanionProject: project_id.clone(),
+            metadata: ClientMetadata {
+                ideType: "IDE_UNSPECIFIED".to_string(),
+                platform: "PLATFORM_UNSPECIFIED".to_string(),
+                pluginType: "GEMINI".to_string(),
+            },
+        };
+
+        tracing::debug!("🔍 Calling loadCodeAssist with project_id={:?}", project_id);
+
+        let response = self.http_client
+            .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to call loadCodeAssist")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!("❌ loadCodeAssist API error {}: {}", status, body);
+            return Err(anyhow!("loadCodeAssist failed: {} - {}", status, body));
+        }
+
+        // Get response text first for debugging
+        let response_text = response.text().await
+            .context("Failed to read loadCodeAssist response")?;
+
+        tracing::debug!("📥 loadCodeAssist API response: {}", response_text);
+
+        let load_response: LoadCodeAssistResponse = serde_json::from_str(&response_text)
+            .context("Failed to parse loadCodeAssist response")?;
+
+        tracing::debug!("🔍 Parsed loadCodeAssist response: cloudaicompanion_project={:?}", load_response.cloudaicompanion_project);
+
+        // If loadCodeAssist returned a project ID, use it
+        // Otherwise, use the one we sent (from environment variables)
+        // This matches gemini-cli behavior
+        let final_project_id = load_response.cloudaicompanion_project
+            .or(project_id);
+
+        final_project_id
+            .ok_or_else(|| anyhow!("No project ID available. Set GOOGLE_CLOUD_PROJECT environment variable."))
     }
 
     /// Get a valid access token (refreshing if needed)
