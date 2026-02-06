@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+.github
+
+# CI/CD
+.claude
+.rapidspec
+
+# Documentation
+*.md
+docs/
+examples/
+
+# Test artifacts
+*.log
+*.profraw
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (not needed for Docker)
+target/
+
+# Config templates are needed for initial setup
+# config/ directory is included for default templates

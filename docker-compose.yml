@@ -1,0 +1,58 @@
+services:
+  claude-code-mux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-code-mux:latest
+    container_name: claude-code-mux
+
+    # Port mapping
+    ports:
+      - "${CCM_PORT:-13456}:13456"
+
+    # Environment variables
+    environment:
+      - CCM_CONFIG=/home/ccm/.claude-code-mux/config.toml
+      - CCM_HOST=0.0.0.0
+      - CCM_PORT=${CCM_PORT:-13456}
+      - RUST_LOG=${RUST_LOG:-info}
+
+    # Volume mounts
+    volumes:
+      # Mount config directory for persistence
+      - ccm-config:/home/ccm/.claude-code-mux
+      # Optional: Mount custom config file
+      # - ./config/custom.toml:/home/ccm/.claude-code-mux/config.toml:ro
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:13456/api/config/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Optional: Resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1.0'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.25'
+    #       memory: 128M
+
+# Named volume for config persistence
+volumes:
+  ccm-config:
+    driver: local
