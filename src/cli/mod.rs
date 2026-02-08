@@ -46,7 +46,7 @@ fn default_port() -> u16 {
 }
 
 fn default_host() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 
 fn default_log_level() -> String {
@@ -159,18 +159,18 @@ impl AppConfig {
         let old_config_path = PathBuf::from("config/default.toml");
         if old_config_path.exists() {
             // Migrate existing config
-            eprintln!("📦 Migrating existing config from {} to {}",
+            eprintln!("ðŸ“¦ Migrating existing config from {} to {}",
                 old_config_path.display(), path.display());
 
             std::fs::copy(&old_config_path, path)
                 .with_context(|| format!("Failed to migrate config from {} to {}",
                     old_config_path.display(), path.display()))?;
 
-            eprintln!("✅ Migration complete! Your existing configuration has been preserved.");
+            eprintln!("âœ… Migration complete! Your existing configuration has been preserved.");
             eprintln!("   Old location: {}", old_config_path.display());
             eprintln!("   New location: {}", path.display());
             eprintln!();
-            eprintln!("💡 You can safely delete the old config file if you want:");
+            eprintln!("ðŸ’¡ You can safely delete the old config file if you want:");
             eprintln!("   rm {}", old_config_path.display());
         } else {
             // Generate default config content
